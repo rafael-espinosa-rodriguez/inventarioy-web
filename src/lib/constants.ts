@@ -35,6 +35,8 @@ export const MODULE_LABELS: Record<string, string> = {
   'departments': 'Departamentos',
   'payroll': 'Nómina',
   'hr': 'RRHH',
+  'loans': 'Deducciones',
+  'liquidations': 'Liquidaciones',
   'accounts': 'Cuentas Pendientes',
   'sync': 'Sincronización',
   'movements': 'Movimientos',
@@ -65,6 +67,10 @@ export const ACTION_LABELS: Record<string, string> = {
   'TOGGLE_TIPO': 'Cambiar Tipo',
   'MARCAR_PAGADO': 'Marcar Pagado',
   'JUSTIFICAR': 'Justificar',
+  'GENERAR_NOMINA': 'Generar Nómina',
+  'APLICAR_NOMINA': 'Aplicar Nómina',
+  'REABRIR_NOMINA': 'Reabrir Nómina',
+  'ACTUALIZAR_NOMINA': 'Actualizar Nómina',
 };
 
 export const DETAIL_KEY_TRANSLATIONS: Record<string, string> = {

@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { db, cacheAllData, getCachedProducts, getCachedMovements, getCachedWarehouses, getCachedTransitItems, getCachedSales, getCachedRecipes, getCachedEmployees, getCachedCategories, getCachedPendingAccounts, getCachedDailyClosings, getCachedAccessPins, getCachedProductWarehouse, getSyncQueueCount, addToSyncQueue, cacheAccessPins } from '../lib/dexieDb';
 import { syncEngine } from '../lib/syncEngine';
 import { isDateClosed } from '../lib/dateUtils';
-import { calcularNomina } from '../utils/payrollCalculations';
+import { calcularNominaEmpleado, calcularNominaSocio, ROUND, DEFAULT_MONTHLY_HOURS, DEFAULT_VACATION_ACCRUAL_DAYS } from '../utils/payrollCalculations';
 import { logger } from '../lib/logger';
 import { normalizeStr } from '../lib/utils';
 import { trackLocalCreation, untrackLocalCreation } from '../lib/realtimeGuard';
@@ -240,6 +240,12 @@ export interface Employee {
   category?: string;
   photo_url?: string;
   hire_date?: string;
+  person_type?: 'employee' | 'partner';
+  base_contribution?: number;
+  contract_type?: 'indefinite' | 'fixed' | 'probation';
+  contract_end_date?: string;
+  expediente?: number;
+  vacation_balance?: number;
   created_at: string;
 }
 
@@ -310,6 +316,8 @@ export interface PayrollConfig {
   tax_rate: number;
   special_contribution_rate: number;
   last_calculated_month?: string;
+  monthly_hours?: number;
+  vacation_accrual_days?: number;
   created_at: string;
   updated_at: string;
 }
@@ -333,8 +341,101 @@ export interface PayrollEntry {
   vacation_base: number;
   employer_contribution: number;
   is_custom: boolean;
+  overtime_hours?: number;
+  overtime_type?: 'diurna' | 'nocturna' | 'descanso' | 'feriado' | null;
+  overtime_pay?: number;
+  bonus?: number;
+  vacation_pay?: number;
+  advances?: number;
+  loan_deduction?: number;
+  other_deductions?: number;
+  gross_salary?: number;
+  worked_hours?: number;
+  hourly_rate?: number;
+  days_paid?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface EmployeeLoan {
+  id: string;
+  user_id: string;
+  employee_id: string;
+  total_amount: number;
+  monthly_payment: number;
+  balance: number;
+  start_date?: string;
+  status: 'active' | 'paid';
+  deduction_type: 'prestamo' | 'credito_bancario' | 'inasistencia' | 'sancion' | 'rotura_equipo' | 'otro';
+  reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollPeriod {
+  id: string;
+  user_id: string;
+  month: number;
+  year: number;
+  status: 'draft' | 'applied';
+  applied_at?: string;
+  applied_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollDraft {
+  id: string;
+  user_id: string;
+  month: number;
+  year: number;
+  employee_id: string;
+  include: boolean;
+  worked_hours: number;
+  hourly_rate: number;
+  bonus: number;
+  advances: number;
+  retention: number;
+  vacation_days: number;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollLiquidation {
+  id: string;
+  user_id: string;
+  employee_id: string;
+  employee_name: string;
+  base_salary: number;
+  hire_date?: string;
+  end_date?: string;
+  months_worked: number;
+  vacation_accumulated: number;
+  vacation_taken: number;
+  vacation_pending: number;
+  vacation_pay: number;
+  severance_months: number;
+  severance_pay: number;
+  notice_days: number;
+  notice_pay: number;
+  gross_total: number;
+  cess: number;
+  iip: number;
+  net_total: number;
+  created_at: string;
+}
+
+export interface EmployeeVacationMovement {
+  id: string;
+  user_id: string;
+  employee_id: string;
+  month: number;
+  year: number;
+  type: 'accrual' | 'paid';
+  days: number;
+  note?: string;
+  created_at: string;
 }
 
 const capitalize = (str: string) =>
@@ -466,6 +567,11 @@ interface DatabaseState {
   departments: Department[];
   payrollConfig: PayrollConfig | null;
   payrollEntries: PayrollEntry[];
+  employeeLoans: EmployeeLoan[];
+  payrollPeriods: PayrollPeriod[];
+  payrollDrafts: PayrollDraft[];
+  payrollLiquidations: PayrollLiquidation[];
+  vacationMovements: EmployeeVacationMovement[];
   pendingAccounts: PendingAccount[];
   accessPins: AccessPin[];
   actionLogs: any[];
@@ -563,6 +669,30 @@ addItemsToPendingAccount: (accountId: string, items: { product_id: string; produ
   updatePayrollEntry: (id: string, updates: Partial<PayrollEntry>) => Promise<void>;
   regeneratePayrollEntry: (id: string) => Promise<void>;
 
+  // Períodos de nómina
+  getPayrollPeriod: (month: number, year: number) => Promise<void>;
+  applyPayroll: (month: number, year: number) => Promise<void>;
+  reopenPayroll: (month: number, year: number) => Promise<void>;
+
+  // Captación pre-nómina
+  getPayrollDrafts: (month: number, year: number) => Promise<PayrollDraft[]>;
+  savePayrollDrafts: (month: number, year: number, drafts: Omit<PayrollDraft, 'id' | 'user_id' | 'created_at' | 'updated_at'>[]) => Promise<void>;
+
+  // Deducciones / préstamos
+  getEmployeeLoans: () => Promise<void>;
+  addLoan: (loan: { employee_id: string; total_amount: number; monthly_payment: number; start_date?: string; deduction_type: EmployeeLoan['deduction_type']; reason?: string }) => Promise<void>;
+  deleteLoan: (id: string) => Promise<void>;
+  payLoanInstallment: (id: string) => Promise<void>;
+
+  // Liquidaciones
+  getPayrollLiquidations: () => Promise<void>;
+  saveLiquidation: (liquidation: Omit<PayrollLiquidation, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
+  deleteLiquidation: (id: string) => Promise<void>;
+
+  // Vacaciones
+  getVacationMovements: (month: number, year: number) => Promise<EmployeeVacationMovement[]>;
+  getVacationBalance: (employeeId: string, month: number, year: number) => Promise<number>;
+
   // Paginación optimizada
   getEmployeesPaginated: (page: number, search?: string, departmentId?: string, sortBy?: 'name' | 'salary', sortOrder?: 'asc' | 'desc') => Promise<void>;
   getDepartmentsPaginated: (page: number, search?: string) => Promise<void>;
@@ -599,6 +729,11 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   departments: [],
   payrollConfig: null,
   payrollEntries: [],
+  employeeLoans: [],
+  payrollPeriods: [],
+  payrollDrafts: [],
+  payrollLiquidations: [],
+  vacationMovements: [],
   accessPins: [],
   // Paginación
   employeesPage: 1,
@@ -651,7 +786,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
     const user = useAuthStore.getState().user;
     if (!user) {
-      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], pendingAccounts: [], accessPins: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
+      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollPeriods: [], payrollDrafts: [], payrollLiquidations: [], vacationMovements: [], pendingAccounts: [], accessPins: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
       _isFetchingAll = false;
       return;
     }
@@ -731,20 +866,23 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     let categoriesData: any[] | null = null;
     let hrDocsData: any[] | null = null;
     let departmentsData: any[] | null = null;
+    let employeeLoansData: any[] | null = null;
 
     try {
       logger.info('📥 Cargando empleados y RRHH...');
-      const [employeesRes, categoriesRes, hrDocsRes, departmentsRes] = await Promise.all([
+      const [employeesRes, categoriesRes, hrDocsRes, departmentsRes, employeeLoansRes] = await Promise.all([
         queryWithRetry(() => supabase.from('employees').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
         queryWithRetry(() => supabase.from('categories').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
         queryWithRetry(() => supabase.from('hr_documents').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
         queryWithRetry(() => supabase.from('departments').select('*').eq('user_id', user.id).order('name', { ascending: true })),
+        queryWithRetry(() => supabase.from('employee_loans').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
       ]);
       employeesData = employeesRes.data || [];
       categoriesData = categoriesRes.data || [];
       hrDocsData = hrDocsRes.data || [];
       departmentsData = departmentsRes.data || [];
-      set({ employees: employeesData, categories: categoriesData, hrDocuments: hrDocsData, departments: departmentsData });
+      employeeLoansData = employeeLoansRes.data || [];
+      set({ employees: employeesData, categories: categoriesData, hrDocuments: hrDocsData, departments: departmentsData, employeeLoans: employeeLoansData });
       await delay(100);
     } catch (e) {
       logger.error('❌ Grupo 3 (empleados/RRHH) falló:', e);
@@ -849,6 +987,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       hrDocuments: hrDocsData ?? currentState.hrDocuments,
       departments: departmentsData ?? currentState.departments,
       payrollConfig: payrollConfigData !== null ? payrollConfigData : currentState.payrollConfig,
+      employeeLoans: employeeLoansData ?? currentState.employeeLoans,
       pendingAccounts: pendingData ?? currentState.pendingAccounts,
       accessPins: accessPinsData ?? currentState.accessPins,
       actionLogs: actionLogsData ?? currentState.actionLogs,
@@ -3356,17 +3495,43 @@ deletePendingAccount: async (accountId: string) => {
     set((state) => ({ recipes: state.recipes.filter(r => r.id !== id) }));
   },
 
-  addEmployee: async (employee) => {
+addEmployee: async (employee) => {
     const user = useAuthStore.getState().user;
     if (!user) throw new Error('No hay usuario autenticado');
 
+    const getNextExpediente = async (): Promise<number> => {
+      if (navigator.onLine) {
+        const { data: expRows } = await queryWithRetry(() =>
+          supabase
+            .from('employees')
+            .select('expediente')
+            .eq('user_id', user.id)
+            .not('expediente', 'is', null)
+            .order('created_at', { ascending: true })
+            .order('id', { ascending: true })
+        );
+        if (expRows && expRows.length > 0) {
+          return Math.max(...expRows.map((r: any) => r.expediente)) + 1;
+        }
+        return 1;
+      }
+      const local = get().employees.filter(e => e.expediente != null);
+      if (local.length > 0) {
+        return Math.max(...local.map(e => e.expediente as number)) + 1;
+      }
+      return 1;
+    };
+
     if (!navigator.onLine) {
       const tempId = crypto.randomUUID();
+      const expediente = await getNextExpediente();
       const tempEmployee = {
         ...employee,
         id: tempId,
         user_id: user.id,
         name: capitalize(employee.name),
+        expediente,
+        vacation_balance: employee.vacation_balance ?? 0,
         created_at: new Date().toISOString(),
       };
       set((state) => ({ employees: [tempEmployee, ...state.employees] }));
@@ -3379,10 +3544,18 @@ deletePendingAccount: async (accountId: string) => {
     const employeeId = crypto.randomUUID();
     trackLocalCreation(employeeId);
     try {
+      const expediente = await getNextExpediente();
       const { data, error } = await queryWithRetry(() =>
         supabase
           .from('employees')
-          .insert({ ...employee, id: employeeId, name: capitalize(employee.name), user_id: user.id })
+          .insert({
+            ...employee,
+            id: employeeId,
+            name: capitalize(employee.name),
+            user_id: user.id,
+            expediente,
+            vacation_balance: employee.vacation_balance ?? 0,
+          })
           .select()
           .single()
       );
@@ -3419,7 +3592,41 @@ deletePendingAccount: async (accountId: string) => {
     }));
   },
 
-  deleteEmployee: async (id) => {
+deleteEmployee: async (id) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+
+    const { data: employee, error: empError } = await queryWithRetry(() =>
+      supabase.from('employees').select('*').eq('id', id).single()
+    );
+    if (empError || !employee) throw new Error('No se encontró el empleado');
+
+    // Documentos del empleado: borrar archivos de storage y luego registros
+    const { data: docs } = await supabase
+      .from('employee_documents')
+      .select('file_url')
+      .eq('employee_id', id);
+    const filePaths = (docs || [])
+      .map((d: any) => d.file_url?.split('/hr-documents/')[1])
+      .filter(Boolean);
+    if (filePaths.length > 0) {
+      await supabase.storage.from('hr-documents').remove(filePaths);
+    }
+    await supabase.from('employee_documents').delete().eq('employee_id', id);
+
+    // Foto del empleado en storage (si está en el bucket hr-documents)
+    const photoPath = employee.photo_url?.split('/hr-documents/')[1];
+    if (photoPath) {
+      await supabase.storage.from('hr-documents').remove([photoPath]);
+    }
+
+    // Registros asociados
+    await supabase.from('employee_loans').delete().eq('employee_id', id);
+    await supabase.from('payroll_drafts').delete().eq('employee_id', id);
+    await supabase.from('payroll_entries').delete().eq('employee_id', id);
+    await supabase.from('payroll_liquidations').delete().eq('employee_id', id);
+    await supabase.from('employee_vacation_movements').delete().eq('employee_id', id);
+
     const { error } = await queryWithRetry(() =>
       supabase.from('employees').delete().eq('id', id)
     );
@@ -3428,7 +3635,15 @@ deletePendingAccount: async (accountId: string) => {
       throw new Error('No se pudo eliminar el empleado');
     }
 
-    set((state) => ({ employees: state.employees.filter(e => e.id !== id) }));
+    set((state) => ({
+      employees: state.employees.filter(e => e.id !== id),
+      employeeDocuments: state.employeeDocuments.filter(d => d.employee_id !== id),
+      employeeLoans: state.employeeLoans.filter(l => l.employee_id !== id),
+      payrollDrafts: state.payrollDrafts.filter(d => d.employee_id !== id),
+      payrollEntries: state.payrollEntries.filter(e => e.employee_id !== id),
+      payrollLiquidations: state.payrollLiquidations.filter(l => l.employee_id !== id),
+      vacationMovements: state.vacationMovements.filter(m => m.employee_id !== id),
+    }));
   },
 
   addDepartment: async (name) => {
@@ -3462,6 +3677,23 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteDepartment: async (id) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+
+    const { count: empCount, error: countError } = await supabase
+      .from('employees')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('category', id);
+
+    if (countError) {
+      throw new Error('No se pudo validar el departamento');
+    }
+
+    if (empCount && empCount > 0) {
+      throw new Error(`Hay ${empCount} empleados en este departamento`);
+    }
+
     const { error } = await supabase.from('departments').delete().eq('id', id);
 
     if (error) {
@@ -3493,6 +3725,8 @@ deletePendingAccount: async (accountId: string) => {
         tax_exemption_base: 3260,
         tax_rate: 5,
         special_contribution_rate: 5,
+        monthly_hours: 190.6,
+        vacation_accrual_days: 2.5,
       };
 
       const { data: newData, error: insertError } = await supabase
@@ -3526,80 +3760,208 @@ deletePendingAccount: async (accountId: string) => {
 
   calculatePayroll: async (month, year) => {
     const user = useAuthStore.getState().user;
-    const config = get().payrollConfig;
-    if (!user || !config) {
-      await get().getPayrollConfig();
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para generar la nómina');
+
+    if (!get().payrollConfig) await get().getPayrollConfig();
+    const currentConfig = get().payrollConfig;
+    if (!currentConfig) throw new Error('No se pudo cargar la configuración de nómina');
+
+    const monthlyHours = currentConfig.monthly_hours ?? DEFAULT_MONTHLY_HOURS;
+    const accrualDays = currentConfig.vacation_accrual_days ?? DEFAULT_VACATION_ACCRUAL_DAYS;
+    const exemptionBase = currentConfig.tax_exemption_base ?? 3260;
+
+    const appliedPeriod = get().payrollPeriods.find(p => p.month === month && p.year === year);
+    if (appliedPeriod?.status === 'applied') throw new Error('El período está aplicado y bloqueado');
+
+    const employees = get().employees;
+    if (!employees || employees.length === 0) throw new Error('No hay personal que generarle nómina');
+    const departments = get().departments;
+
+    let drafts = await get().getPayrollDrafts(month, year);
+    if (!drafts || drafts.length === 0) {
+      drafts = employees.map(emp => ({
+        id: crypto.randomUUID(),
+        user_id: user.id,
+        month,
+        year,
+        employee_id: emp.id,
+        include: true,
+        worked_hours: monthlyHours,
+        hourly_rate: ROUND(emp.salary / monthlyHours),
+        bonus: 0,
+        advances: 0,
+        retention: 0,
+        vacation_days: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }));
     }
 
-    const currentConfig = get().payrollConfig;
-    if (!currentConfig) return;
+    const included = drafts.filter(d => d.include);
+    if (included.length === 0) throw new Error('No hay trabajadores seleccionados para la nómina de este mes');
 
-    // Re-check user after config fetch
-    const currentUser = useAuthStore.getState().user;
-    if (!currentUser) return;
-
-    const monthStr = `${year}-${String(month).padStart(2, '0')}`;
     const { data: existingEntries } = await supabase
       .from('payroll_entries')
       .select('id')
-      .eq('user_id', currentUser.id)
+      .eq('user_id', user.id)
       .eq('month', month)
       .eq('year', year);
+    const isFirstGeneration = !existingEntries || existingEntries.length === 0;
 
-    if (existingEntries && existingEntries.length > 0) {
-      await supabase.from('payroll_entries').delete().eq('user_id', currentUser.id).eq('month', month).eq('year', year);
-    }
+    const activeLoans = get().employeeLoans.filter(l => l.status === 'active');
 
-    const employees = get().employees;
-    const departments = get().departments;
+    const entriesToInsert = [];
+    for (const d of included) {
+      const emp = employees.find(e => e.id === d.employee_id);
+      if (!emp) continue;
+      const empDept = departments.find(dep => dep.id === emp.category);
+      const loan = activeLoans.find(l => l.employee_id === emp.id);
+      const loanDeduction = loan ? (loan.monthly_payment || 0) : 0;
 
-    const entriesToInsert = employees.map(emp => {
-      const earned_salary = emp.salary;
-      const exemption_base = currentConfig.tax_exemption_base;
-      const result = calcularNomina(earned_salary, exemption_base);
+      const isPartner = emp.person_type === 'partner';
+      let result;
+      if (isPartner) {
+        result = calcularNominaSocio({
+          retiro: emp.salary,
+          baseContribution: emp.base_contribution ?? 0,
+          bonus: d.bonus,
+          advances: d.advances,
+          loanDeduction,
+          otherDeductions: d.retention,
+        });
+      } else {
+        result = calcularNominaEmpleado({
+          baseSalary: emp.salary,
+          hourlyRate: d.hourly_rate || undefined,
+          workedHours: d.worked_hours,
+          monthlyHours,
+          bonus: d.bonus,
+          vacationDays: d.vacation_days,
+          advances: d.advances,
+          loanDeduction,
+          otherDeductions: d.retention,
+          exemptionBase,
+        });
+      }
 
-      const empDept = departments.find(d => d.id === emp.category);
-
-      return {
-        user_id: currentUser.id,
+      entriesToInsert.push({
+        user_id: user.id,
         employee_id: emp.id,
         employee_name: emp.name,
         employee_category: empDept?.name || 'Sin Departamento',
         month,
         year,
         base_salary: emp.salary,
-        earned_salary,
-        exemption_base,
+        earned_salary: result.earnedSalary,
+        exemption_base: exemptionBase,
         taxable_base: result.taxableBase,
         tax_amount: result.taxAmount,
         special_contribution: result.specialContribution,
         net_salary: result.netSalary,
-        vacation_days: 0,
+        vacation_days: d.vacation_days,
         vacation_base: result.vacationBase,
         employer_contribution: result.employerContribution,
         is_custom: false,
-      };
-    });
-
-    if (entriesToInsert.length > 0) {
-      const { data, error } = await supabase.from('payroll_entries').insert(entriesToInsert).select();
-      if (error) {
-        throw new Error('No se pudo generar la nómina');
-      }
-
-      set((state) => ({
-        payrollEntries: data || [],
-        payrollConfig: state.payrollConfig ? { ...state.payrollConfig, last_calculated_month: monthStr } : null,
-      }));
-
-      await supabase.from('payroll_config').update({ last_calculated_month: monthStr }).eq('user_id', currentUser.id);
+        overtime_hours: result.overtimeHours,
+        overtime_type: result.overtimeType,
+        overtime_pay: result.overtimePay,
+        bonus: result.bonus,
+        vacation_pay: result.vacationPay,
+        advances: result.advances,
+        loan_deduction: result.loanDeduction,
+        other_deductions: result.otherDeductions,
+        gross_salary: result.grossSalary,
+        worked_hours: result.workedHours,
+        hourly_rate: result.hourlyRate,
+        days_paid: result.daysPaid,
+      });
     }
+
+    if (isFirstGeneration) {
+      for (const d of included) {
+        const loan = activeLoans.find(l => l.employee_id === d.employee_id);
+        if (!loan) continue;
+        const newBalance = Math.max(0, (loan.balance || 0) - (loan.monthly_payment || 0));
+        const newStatus = newBalance <= 0 ? 'paid' : 'active';
+        await supabase.from('employee_loans')
+          .update({ balance: newBalance, status: newStatus, updated_at: new Date().toISOString() })
+          .eq('id', loan.id);
+      }
+    }
+
+    // Vacaciones: recálculo completo del mes (delete + reinsert)
+    await supabase
+      .from('employee_vacation_movements')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year);
+
+    const movements: any[] = [];
+    for (const d of included) {
+      const emp = employees.find(e => e.id === d.employee_id);
+      if (!emp) continue;
+      movements.push({ user_id: user.id, employee_id: emp.id, month, year, type: 'accrual', days: accrualDays, note: 'Acumulación mensual' });
+      if (d.vacation_days > 0) {
+        movements.push({ user_id: user.id, employee_id: emp.id, month, year, type: 'paid', days: -d.vacation_days, note: 'Vacaciones pagadas' });
+      }
+    }
+    if (movements.length > 0) {
+      await supabase.from('employee_vacation_movements').insert(movements);
+    }
+
+    // Saldo de vacaciones = suma de todos los movimientos históricos (excluyendo el mes recalculado)
+    const balanceUpdates: { id: string; balance: number }[] = [];
+    for (const d of included) {
+      const emp = employees.find(e => e.id === d.employee_id);
+      if (!emp) continue;
+      const { data: movRows } = await supabase
+        .from('employee_vacation_movements')
+        .select('days')
+        .eq('user_id', user.id)
+        .eq('employee_id', emp.id)
+        .not('month', 'eq', month)
+        .not('year', 'eq', year);
+      const balance = Math.max(0, ROUND((movRows || []).reduce((s: number, m: any) => s + (m.days || 0), 0)));
+      await supabase.from('employees').update({ vacation_balance: balance }).eq('id', emp.id);
+      balanceUpdates.push({ id: emp.id, balance });
+    }
+
+    // Período en Borrador (no pisar uno aplicado)
+    const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+    await supabase.from('payroll_periods').upsert(
+      { user_id: user.id, month, year, status: 'draft', updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,month,year' }
+    );
+    await get().getPayrollPeriod(month, year);
+
+    // Delete + reinsert de entradas
+    await supabase.from('payroll_entries').delete().eq('user_id', user.id).eq('month', month).eq('year', year);
+    const { data, error } = await supabase.from('payroll_entries').insert(entriesToInsert).select();
+    if (error) {
+      logger.error('Error inserting payroll entries:', error);
+      throw new Error('No se pudo generar la nómina');
+    }
+
+    set((state) => ({
+      payrollEntries: data || [],
+      employees: state.employees.map(e => {
+        const up = balanceUpdates.find(b => b.id === e.id);
+        return up ? { ...e, vacation_balance: up.balance } : e;
+      }),
+      payrollConfig: state.payrollConfig ? { ...state.payrollConfig, last_calculated_month: monthStr } : null,
+    }));
+
+    await supabase.from('payroll_config').update({ last_calculated_month: monthStr }).eq('user_id', user.id);
+
+    await get().getVacationMovements(month, year);
 
     await get().logAction('payroll', 'GENERAR_NOMINA', {
       month,
       year,
-      total_employees: employees.length,
-      total_net: entriesToInsert.reduce((sum, e) => sum + e.net_salary, 0),
+      total_employees: included.length,
+      total_net: entriesToInsert.reduce((sum: number, e: any) => sum + e.net_salary, 0),
     });
   },
 
@@ -3830,32 +4192,89 @@ deletePendingAccount: async (accountId: string) => {
     const currentEntry = get().payrollEntries.find(e => e.id === id);
     if (!currentEntry) return;
 
+    const applied = get().payrollPeriods.find(p => p.month === currentEntry.month && p.year === currentEntry.year)?.status === 'applied';
+    if (applied) throw new Error('El período está aplicado y bloqueado');
+
     const config = get().payrollConfig;
-    if (!config) return;
+    if (!config) throw new Error('No se pudo cargar la configuración de nómina');
 
-    let finalUpdates = { ...updates };
+    const employee = get().employees.find(e => e.id === currentEntry.employee_id);
+    const isPartner = employee?.person_type === 'partner';
 
-    if (updates.earned_salary !== undefined) {
-      const earned_salary = updates.earned_salary;
-      const exemption_base = config.tax_exemption_base;
-      const result = calcularNomina(earned_salary, exemption_base);
+    const exemptionBase = config.tax_exemption_base ?? 3260;
+    const monthlyHours = config.monthly_hours ?? DEFAULT_MONTHLY_HOURS;
 
-      finalUpdates = {
-        ...updates,
-        earned_salary,
-        exemption_base,
-        taxable_base: result.taxableBase,
-        tax_amount: result.taxAmount,
-        special_contribution: result.specialContribution,
-        net_salary: result.netSalary,
-        vacation_base: result.vacationBase,
-        employer_contribution: result.employerContribution,
-      };
+    const baseSalary = currentEntry.base_salary ?? employee?.salary ?? 0;
+    const hourlyRate = currentEntry.hourly_rate ?? ROUND(baseSalary / monthlyHours);
+    const workedHours = updates.worked_hours ?? currentEntry.worked_hours ?? monthlyHours;
+
+    const overtimeHours = updates.overtime_hours ?? currentEntry.overtime_hours ?? 0;
+    const overtimeType = (updates.overtime_type !== undefined ? updates.overtime_type : currentEntry.overtime_type) ?? undefined;
+    const bonus = updates.bonus ?? currentEntry.bonus ?? 0;
+    const vacationDays = updates.vacation_days ?? currentEntry.vacation_days ?? 0;
+    const advances = updates.advances ?? currentEntry.advances ?? 0;
+    const otherDeductions = updates.other_deductions ?? currentEntry.other_deductions ?? 0;
+
+    const activeLoan = get().employeeLoans.find(l => l.employee_id === currentEntry.employee_id && l.status === 'active');
+    const loanDeduction = updates.loan_deduction ?? currentEntry.loan_deduction ?? (activeLoan?.monthly_payment ?? 0);
+
+    let result;
+    if (isPartner) {
+      result = calcularNominaSocio({
+        retiro: baseSalary,
+        baseContribution: employee?.base_contribution ?? 0,
+        bonus,
+        advances,
+        loanDeduction,
+        otherDeductions,
+      });
+    } else {
+      result = calcularNominaEmpleado({
+        baseSalary,
+        hourlyRate,
+        workedHours,
+        monthlyHours,
+        overtimeHours,
+        overtimeType,
+        bonus,
+        vacationDays,
+        advances,
+        loanDeduction,
+        otherDeductions,
+        exemptionBase,
+      });
     }
+
+    const finalUpdates = {
+      ...updates,
+      base_salary: baseSalary,
+      earned_salary: result.earnedSalary,
+      exemption_base: exemptionBase,
+      taxable_base: result.taxableBase,
+      tax_amount: result.taxAmount,
+      special_contribution: result.specialContribution,
+      net_salary: result.netSalary,
+      vacation_days: vacationDays,
+      vacation_base: result.vacationBase,
+      employer_contribution: result.employerContribution,
+      overtime_hours: result.overtimeHours,
+      overtime_type: result.overtimeType || null,
+      overtime_pay: result.overtimePay,
+      bonus: result.bonus,
+      vacation_pay: result.vacationPay,
+      advances: result.advances,
+      loan_deduction: result.loanDeduction,
+      other_deductions: result.otherDeductions,
+      gross_salary: result.grossSalary,
+      worked_hours: result.workedHours,
+      hourly_rate: result.hourlyRate,
+      days_paid: result.daysPaid,
+      is_custom: true,
+    };
 
     const { error } = await supabase
       .from('payroll_entries')
-      .update({ ...finalUpdates, updated_at: new Date().toISOString(), is_custom: true })
+      .update({ ...finalUpdates, updated_at: new Date().toISOString() })
       .eq('id', id);
 
     if (error) {
@@ -3863,7 +4282,7 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     set((state) => ({
-      payrollEntries: state.payrollEntries.map(e => e.id === id ? { ...e, ...finalUpdates, is_custom: true } : e),
+      payrollEntries: state.payrollEntries.map(e => e.id === id ? { ...e, ...finalUpdates } : e),
     }));
 
     const entry = get().payrollEntries.find(e => e.id === id);
@@ -3880,28 +4299,492 @@ deletePendingAccount: async (accountId: string) => {
     const entry = get().payrollEntries.find(e => e.id === id);
     if (!entry) return;
 
+    const applied = get().payrollPeriods.find(p => p.month === entry.month && p.year === entry.year)?.status === 'applied';
+    if (applied) throw new Error('El período está aplicado y bloqueado');
+
     const config = get().payrollConfig;
-    if (!config) return;
+    if (!config) throw new Error('No se pudo cargar la configuración de nómina');
 
     const employee = get().employees.find(e => e.id === entry.employee_id);
     if (!employee) return;
 
-    const earned_salary = employee.salary;
-    const exemption_base = config.tax_exemption_base;
-    const result = calcularNomina(earned_salary, exemption_base);
+    const draft = get().payrollDrafts.find(d => d.employee_id === entry.employee_id && d.month === entry.month && d.year === entry.year);
 
-    await get().updatePayrollEntry(id, {
-      base_salary: employee.salary,
-      earned_salary,
-      exemption_base,
+    const isPartner = employee.person_type === 'partner';
+    const exemptionBase = config.tax_exemption_base ?? 3260;
+    const monthlyHours = config.monthly_hours ?? DEFAULT_MONTHLY_HOURS;
+
+    const baseSalary = employee.salary;
+    const hourlyRate = draft?.hourly_rate ?? ROUND(baseSalary / monthlyHours);
+    const workedHours = draft?.worked_hours ?? monthlyHours;
+    const vacationDays = draft?.vacation_days ?? 0;
+
+    const activeLoan = get().employeeLoans.find(l => l.employee_id === employee.id && l.status === 'active');
+    const loanDeduction = activeLoan?.monthly_payment ?? 0;
+
+    let result;
+    if (isPartner) {
+      result = calcularNominaSocio({
+        retiro: baseSalary,
+        baseContribution: employee.base_contribution ?? 0,
+        bonus: 0,
+        advances: 0,
+        loanDeduction,
+        otherDeductions: 0,
+      });
+    } else {
+      result = calcularNominaEmpleado({
+        baseSalary,
+        hourlyRate,
+        workedHours,
+        monthlyHours,
+        overtimeHours: 0,
+        overtimeType: undefined,
+        bonus: 0,
+        vacationDays,
+        advances: 0,
+        loanDeduction,
+        otherDeductions: 0,
+        exemptionBase,
+      });
+    }
+
+    const finalUpdates = {
+      base_salary: baseSalary,
+      earned_salary: result.earnedSalary,
+      exemption_base: exemptionBase,
       taxable_base: result.taxableBase,
       tax_amount: result.taxAmount,
       special_contribution: result.specialContribution,
       net_salary: result.netSalary,
+      vacation_days: vacationDays,
       vacation_base: result.vacationBase,
       employer_contribution: result.employerContribution,
+      overtime_hours: result.overtimeHours,
+      overtime_type: result.overtimeType || null,
+      overtime_pay: result.overtimePay,
+      bonus: result.bonus,
+      vacation_pay: result.vacationPay,
+      advances: result.advances,
+      loan_deduction: result.loanDeduction,
+      other_deductions: result.otherDeductions,
+      gross_salary: result.grossSalary,
+      worked_hours: result.workedHours,
+      hourly_rate: result.hourlyRate,
+      days_paid: result.daysPaid,
       is_custom: false,
+    };
+
+    const { error } = await supabase
+      .from('payroll_entries')
+      .update({ ...finalUpdates, updated_at: new Date().toISOString() })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error('No se pudo regenerar el registro de nómina');
+    }
+
+    set((state) => ({
+      payrollEntries: state.payrollEntries.map(e => e.id === id ? { ...e, ...finalUpdates } : e),
+    }));
+
+    const updated = get().payrollEntries.find(e => e.id === id);
+    if (updated) {
+      await get().logAction('payroll', 'ACTUALIZAR_NOMINA', {
+        employee_name: updated.employee_name,
+        field: 'regenerate',
+        old_value: 'default',
+      });
+    }
+  },
+
+  getPayrollPeriod: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return;
+
+    const { data, error } = await supabase
+      .from('payroll_periods')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+
+    if (error) {
+      logger.error('Error fetching payroll period:', error);
+      return;
+    }
+
+    const period = data as PayrollPeriod | null;
+    set((state) => {
+      const others = state.payrollPeriods.filter(p => !(p.month === month && p.year === year));
+      return { payrollPeriods: period ? [...others, period] : others };
     });
+  },
+
+  applyPayroll: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para aplicar la nómina');
+
+    const verifiedRole = get().verifiedRole || get().accessPins.find(p => p.is_active)?.role;
+    if (verifiedRole && verifiedRole !== 'owner') {
+      throw new Error('Solo el rol Dueño/a puede aplicar la nómina');
+    }
+
+    const appliedBy = user.name || user.email;
+
+    const { data, error } = await supabase
+      .from('payroll_periods')
+      .upsert(
+        {
+          user_id: user.id,
+          month,
+          year,
+          status: 'applied',
+          applied_at: new Date().toISOString(),
+          applied_by: appliedBy,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,month,year' }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Error applying payroll:', error);
+      throw new Error('No se pudo aplicar la nómina');
+    }
+
+    set((state) => {
+      const others = state.payrollPeriods.filter(p => !(p.month === month && p.year === year));
+      return { payrollPeriods: [data as PayrollPeriod, ...others] };
+    });
+
+    const monthName = new Date(0, month - 1).toLocaleString('es', { month: 'long' });
+    await get().logAction('payroll', 'APLICAR_NOMINA', {
+      month,
+      year,
+      period: `${capitalize(monthName)} ${year}`,
+    });
+  },
+
+  reopenPayroll: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para reabrir la nómina');
+
+    const verifiedRole = get().verifiedRole || get().accessPins.find(p => p.is_active)?.role;
+    if (verifiedRole && verifiedRole !== 'owner') {
+      throw new Error('Solo el rol Dueño/a puede reabrir la nómina');
+    }
+
+    const period = get().payrollPeriods.find(p => p.month === month && p.year === year);
+    if (!period) throw new Error('No existe el período de nómina');
+
+    const { data, error } = await supabase
+      .from('payroll_periods')
+      .update({ status: 'draft', applied_at: null, applied_by: null, updated_at: new Date().toISOString() })
+      .eq('id', period.id)
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Error reopening payroll:', error);
+      throw new Error('No se pudo reabrir la nómina');
+    }
+
+    set((state) => ({
+      payrollPeriods: state.payrollPeriods.map(p => p.id === period.id ? data as PayrollPeriod : p),
+    }));
+
+    const monthName = new Date(0, month - 1).toLocaleString('es', { month: 'long' });
+    await get().logAction('payroll', 'REABRIR_NOMINA', {
+      month,
+      year,
+      period: `${capitalize(monthName)} ${year}`,
+      by: 'owner',
+    });
+  },
+
+  getPayrollDrafts: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return [];
+
+    const { data, error } = await supabase
+      .from('payroll_drafts')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year);
+
+    if (error) {
+      logger.error('Error fetching payroll drafts:', error);
+      return [];
+    }
+
+    const drafts: PayrollDraft[] = (data || []).map((d: any) => ({
+      ...d,
+      include: Boolean(d.include),
+    }));
+
+    set((state) => ({
+      payrollDrafts: [
+        ...state.payrollDrafts.filter(p => !(p.month === month && p.year === year)),
+        ...drafts,
+      ],
+    }));
+
+    return drafts;
+  },
+
+  savePayrollDrafts: async (month, year, drafts) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para guardar la captación');
+
+    const applied = get().payrollPeriods.find(p => p.month === month && p.year === year)?.status === 'applied';
+    if (applied) throw new Error('El período está aplicado y bloqueado');
+
+    const rows = drafts.map((d) => ({
+      user_id: user.id,
+      month,
+      year,
+      employee_id: d.employee_id,
+      include: d.include ? 1 : 0,
+      worked_hours: d.worked_hours,
+      hourly_rate: d.hourly_rate,
+      bonus: d.bonus,
+      advances: d.advances,
+      retention: d.retention,
+      vacation_days: d.vacation_days,
+      note: d.note,
+      updated_at: new Date().toISOString(),
+    }));
+
+    if (rows.length === 0) return;
+
+    const { error } = await supabase
+      .from('payroll_drafts')
+      .upsert(rows, { onConflict: 'user_id,month,year,employee_id' });
+
+    if (error) {
+      logger.error('Error saving payroll drafts:', error);
+      throw new Error('No se pudo guardar la captación');
+    }
+
+    set((state) => ({
+      payrollDrafts: [
+        ...state.payrollDrafts.filter(p => !(p.month === month && p.year === year)),
+        ...drafts.map(d => ({
+          id: crypto.randomUUID(),
+          user_id: user.id,
+          month,
+          year,
+          employee_id: d.employee_id,
+          include: d.include,
+          worked_hours: d.worked_hours,
+          hourly_rate: d.hourly_rate,
+          bonus: d.bonus,
+          advances: d.advances,
+          retention: d.retention,
+          vacation_days: d.vacation_days,
+          note: d.note,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })),
+      ],
+    }));
+  },
+
+  getEmployeeLoans: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return;
+
+    const { data, error } = await supabase
+      .from('employee_loans')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      logger.error('Error fetching employee loans:', error);
+      return;
+    }
+
+    set({ employeeLoans: data as EmployeeLoan[] || [] });
+  },
+
+  addLoan: async (loan) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para registrar la deducción');
+
+    const { data, error } = await supabase
+      .from('employee_loans')
+      .insert({
+        user_id: user.id,
+        employee_id: loan.employee_id,
+        total_amount: loan.total_amount,
+        monthly_payment: loan.monthly_payment,
+        balance: loan.total_amount,
+        start_date: loan.start_date || null,
+        status: 'active',
+        deduction_type: loan.deduction_type,
+        reason: loan.reason,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Error addLoan:', error);
+      throw new Error(error.message || 'No se pudo registrar la deducción');
+    }
+
+    set((state) => ({ employeeLoans: [data as EmployeeLoan, ...state.employeeLoans] }));
+  },
+
+  deleteLoan: async (id) => {
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para eliminar la deducción');
+
+    const { error } = await supabase.from('employee_loans').delete().eq('id', id);
+
+    if (error) {
+      throw new Error('No se pudo eliminar la deducción');
+    }
+
+    set((state) => ({ employeeLoans: state.employeeLoans.filter(l => l.id !== id) }));
+  },
+
+  payLoanInstallment: async (id) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para registrar el pago');
+
+    const { data: loan, error: fetchError } = await supabase
+      .from('employee_loans')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !loan) {
+      throw new Error('No se encontró la deducción');
+    }
+
+    const newBalance = Math.max(0, (loan.balance ?? 0) - (loan.monthly_payment ?? 0));
+    const newStatus = newBalance <= 0 ? 'paid' : 'active';
+
+    const { data, error } = await supabase
+      .from('employee_loans')
+      .update({ balance: newBalance, status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error('No se pudo registrar el pago de la cuota');
+    }
+
+    set((state) => ({
+      employeeLoans: state.employeeLoans.map(l => l.id === id ? data as EmployeeLoan : l),
+    }));
+  },
+
+  getPayrollLiquidations: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return;
+
+    const { data, error } = await supabase
+      .from('payroll_liquidations')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      logger.error('Error fetching payroll liquidations:', error);
+      return;
+    }
+
+    set({ payrollLiquidations: data as PayrollLiquidation[] || [] });
+  },
+
+  saveLiquidation: async (liquidation) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para guardar la liquidación');
+
+    const { data, error } = await supabase
+      .from('payroll_liquidations')
+      .insert({ ...liquidation, user_id: user.id })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Error saveLiquidation:', error);
+      throw new Error(error.message || 'No se pudo guardar la liquidación');
+    }
+
+    set((state) => ({ payrollLiquidations: [data as PayrollLiquidation, ...state.payrollLiquidations] }));
+  },
+
+  deleteLiquidation: async (id) => {
+    if (!navigator.onLine) throw new Error('Requiere conexión a internet para eliminar la liquidación');
+
+    const { error } = await supabase.from('payroll_liquidations').delete().eq('id', id);
+
+    if (error) {
+      throw new Error('No se pudo eliminar la liquidación');
+    }
+
+    set((state) => ({ payrollLiquidations: state.payrollLiquidations.filter(l => l.id !== id) }));
+  },
+
+  getVacationMovements: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return [];
+
+    const { data, error } = await supabase
+      .from('employee_vacation_movements')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year);
+
+    if (error) {
+      logger.error('Error fetching vacation movements:', error);
+      return [];
+    }
+
+    const movements = data as EmployeeVacationMovement[] || [];
+    set((state) => ({
+      vacationMovements: [
+        ...state.vacationMovements.filter(m => !(m.month === month && m.year === year)),
+        ...movements,
+      ],
+    }));
+
+    return movements;
+  },
+
+  getVacationBalance: async (employeeId, month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user || !navigator.onLine) return 0;
+
+    const { data, error } = await supabase
+      .from('employee_vacation_movements')
+      .select('days')
+      .eq('user_id', user.id)
+      .eq('employee_id', employeeId)
+      .not('month', 'eq', month)
+      .not('year', 'eq', year);
+
+    if (error) {
+      logger.error('Error fetching vacation balance:', error);
+      return 0;
+    }
+
+    const total = (data || []).reduce((sum: number, m: any) => sum + (m.days || 0), 0);
+    return Math.max(0, Math.round(total * 100) / 100);
   },
 
   addCategory: async (name) => {
