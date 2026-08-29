@@ -422,7 +422,14 @@ export default function HRView() {
     await store.getPayrollEntries(month, year);
     const drafts = await store.getPayrollDrafts(month, year);
     const monthlyHours = payrollConfig?.monthly_hours ?? 190.6;
-    const rows = employees.map(emp => {
+    // Si aún no se cargaron los empleados (carga inicial asíncrona / cambios
+    // externos), recargarlos primero para que la captación no quede vacía.
+    let empList = store.employees;
+    if (empList.length === 0 && navigator.onLine) {
+      await store.getEmployeesPaginated(1, '', '');
+      empList = useDatabaseStore.getState().employees;
+    }
+    const rows = empList.map(emp => {
       const existing = drafts.find(d => d.employee_id === emp.id);
       return {
         employee_id: emp.id,

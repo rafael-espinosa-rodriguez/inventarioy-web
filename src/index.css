@@ -2,6 +2,8 @@
 @import "tailwindcss";
 
 @theme {
+  --breakpoint-xs: 480px;
+
   --color-primary: #FFC107;
   --color-primary-hover: #FFD54F;
   --color-bg: #0a0a0a;

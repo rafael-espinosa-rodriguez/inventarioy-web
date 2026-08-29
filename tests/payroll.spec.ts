@@ -103,8 +103,21 @@ test('Flujo de nómina: captación → generar → conceptos → aplicar', { tag
   const seed = await seedAndCleanup(page);
   expect(seed.ok).toBe(true);
 
+  // Recargar la página para que el store (zustand) re-ejecute su carga inicial
+  // desde Supabase y así refleje los empleados sembrados por API en seedAndCleanup.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(4000);
+
   await page.goto(APP_URL + '/dashboard/hr', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(3000);
   await expect(page.locator('body')).toContainText('Recursos Humanos', { timeout: 60000 });
+
+  // Cerrar el modal global "Teléfono de Contacto" si aparece (onboarding de la app)
+  const masTarde = page.getByRole('button', { name: 'Más tarde' });
+  if (await masTarde.isVisible().catch(() => false)) {
+    await masTarde.click();
+    await page.waitForTimeout(300);
+  }
 
   // Pestaña Nómina
   await page.getByRole('button', { name: 'Nómina' }).first().click();
