@@ -2,14 +2,14 @@
 
 **Gestor de inventario web con sincronización en la nube y modo offline**
 
-Una aplicación web construida con TypeScript que permite gestionar inventarios desde cualquier navegador. Está equipada con Supabase para sincronización en la nube y PWA con IndexedDB (Dexie.js) para funcionamiento offline.
+Una aplicación web construida con TypeScript que permite gestionar inventarios desde cualquier navegador. Está equipada con Supabase para sincronización en la nube y PWA con IndexedDB (Dexie.js) para funcionamiento offline temporal.
 
 ## Características
 
 - 🌐 **Acceso desde el navegador** - Funciona en cualquier dispositivo con navegador
 - ☁️ **Sincronización en la nube** - Supabase para persistencia y sincronización
-- 📱 **PWA Offline-ready** - Funciona sin conexión gracias a IndexedDB (Dexie.js)
-- 🔄 **Sincronización automática** - Sincroniza datos cuando recupera conexión
+- 📱 **PWA con soporte offline** - Permite continuar trabajando temporalmente sin conexión mediante IndexedDB (Dexie.js) y sincroniza los cambios con Supabase cuando la conexión se recupera
+- 🔄 **Sincronización automática** - Sincroniza los datos cuando recupera la conexión
 - ⚡ **Aplicación web progresiva** - Instalable como app en dispositivos
 
 ### Funcionalidades de Gestión
@@ -34,10 +34,10 @@ Una aplicación web construida con TypeScript que permite gestionar inventarios 
 
 ## Stack Tecnológico
 
-- **Frontend**: Frontend**: React 19 + TypeScript + Vite
-- **Database**: Supabase
-- **Offline Storage**: IndexedDB (Dexie.js)
-- **PWA**: Service Workers
+- **Frontend**: React 19 + TypeScript + Vite
+- **Base de datos remota**: Supabase
+- **Almacenamiento local**: IndexedDB mediante Dexie.js
+- **PWA**: Vite PWA y Service Worker
 - **Styling**: Tailwind CSS
 
 ## Inicio Rápido
@@ -55,4 +55,4 @@ Las variables de entorno están configuradas en Vercel para producción.
 
 ---
 
-**Nota**: Si buscas una versión completamente offline sin requerimientos de conexión, consulta [inventarioy-desktop](https://github.com/Rafael6357/inventarioy-desktop)
+**Nota**: Si buscas una versión completamente offline, sin conexión a internet ni servicios remotos, consulta [inventarioy-desktop](https://github.com/rafael-espinosa-rodriguez/inventarioy-desktop).
