@@ -34,7 +34,7 @@ Una aplicación web construida con TypeScript que permite gestionar inventarios 
 
 ## Stack Tecnológico
 
-- **Frontend**: Next.js + TypeScript
+- **Frontend**: Frontend**: React 19 + TypeScript + Vite
 - **Database**: Supabase
 - **Offline Storage**: IndexedDB (Dexie.js)
 - **PWA**: Service Workers
